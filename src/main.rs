@@ -7,6 +7,7 @@ use axum::{extract::{Path, State}, Json, http::StatusCode, response::IntoRespons
 use axum::routing::{get, put};
 use serde_json::Value;
 use crate::api::package::put_package;
+use crate::api::user::add_user;
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -28,6 +29,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
         .route("/packages/:package_name", put(put_package))
+        .route("/-/user/org.couchdb.user:{username}", put(add_user))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:4000").await.unwrap();
     axum::serve(listener, app).await.unwrap();

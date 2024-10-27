@@ -1,3 +1,4 @@
 pub mod registry;
 pub mod package;
-mod version;
+pub mod version;
+pub mod login;
