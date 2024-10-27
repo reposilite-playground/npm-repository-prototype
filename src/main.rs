@@ -1,34 +1,67 @@
 mod models;
 mod api;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use axum::{extract::{Path, State}, Json, http::StatusCode, response::IntoResponse, Router};
+use std::fs;
+use std::fs::File;
+use std::io::{Error, ErrorKind, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc};
+use axum::{Router};
 use axum::routing::{get, put};
 use serde_json::Value;
+use sha2::{Digest, Sha512};
 use crate::api::package::put_package;
 use crate::api::user::add_user;
+use crate::models::package::PackageRequest;
 
 #[derive(Debug, Clone)]
 pub struct AppState {
-    pub packages: Arc<Mutex<HashMap<String, Value>>>,
+    pub package_dir: Arc<PathBuf>
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        Self {
-            packages: Arc::new(Mutex::new(HashMap::new())),
+    pub fn new(directory: PathBuf) -> Self {
+        if let Err(e) = fs::create_dir_all(&directory) {
+            eprintln!("Failed to create directory: {:?}", e);
         }
+        Self {
+            package_dir: Arc::new(directory),
+        }
+    }
+
+    pub fn save_package_to_file(&self, package_name: &str, payload: &PackageRequest) -> Result<(), String> {
+        let file_path = self.package_dir.join(format!("{}.json", package_name));
+
+        let json_data = serde_json::to_string_pretty(payload)
+            .map_err(|err| format!("Failed to serialize package: {}", err))?;
+
+        let mut file = File::create(&file_path)
+            .map_err(|err| format!("Failed to create file: {}", err))?;
+        file.write_all(json_data.as_bytes())
+            .map_err(|err| format!("Failed to write to file: {}", err))?;
+
+        let mut hasher = Sha512::new();
+        hasher.update(&json_data);
+        let checksum = hasher.finalize();
+
+        println!("Checksum for package '{}': {:x}", package_name, checksum);
+
+        Ok(())
+    }
+
+    fn package_file_path(&self, package_name: &str) -> PathBuf {
+        self.package_dir.join(format!("{}.json", package_name))
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let state = Arc::new(AppState::new());
+    let package_dir = PathBuf::from("packages");
+    let state = Arc::new(AppState::new(package_dir));
 
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
-        .route("/packages/:package_name", put(put_package))
+        .route("/:package_name", put(put_package))
         .route("/-/user/org.couchdb.user:{username}", put(add_user))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:4000").await.unwrap();
