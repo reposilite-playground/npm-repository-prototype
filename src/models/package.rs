@@ -15,6 +15,20 @@ pub struct PackageRequest {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+pub struct PackageResponse {
+    #[serde(rename = "_attachments")]
+    pub attachments: HashMap<String, Attachment>,
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub access: Option<String>,
+    pub description: Option<String>,
+    #[serde(rename = "dist-tags")]
+    pub dist_tags: DistTags,
+    pub name: String,
+    pub versions: HashMap<String, Version>
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Attachment {
     pub content_type: String,
     pub data: String,
