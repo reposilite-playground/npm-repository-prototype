@@ -1,12 +1,10 @@
-mod models;
 mod api;
 
 use crate::api::package::{get_package, put_package};
 use crate::api::user::add_user;
-use crate::models::package::{PackageRequest, PackageResponse};
 use axum::routing::{get, put};
-use axum::Router;
-use serde_json::from_reader;
+use axum::{Json, Router};
+use serde_json::{from_reader, Value};
 use sha2::{Digest, Sha512};
 use std::fs;
 use std::fs::File;
@@ -14,62 +12,48 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AppState {
-    pub package_dir: Arc<PathBuf>
 }
 
 impl AppState {
-    pub fn new(directory: PathBuf) -> Self {
-        if let Err(e) = fs::create_dir_all(&directory) {
-            eprintln!("Failed to create directory: {:?}", e);
-        }
-        Self {
-            package_dir: Arc::new(directory),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
+    
+    pub fn save_to_file(&self, directory: &PathBuf, filename: &str, raw_json: &str) -> Result<(), String> {
+        if let Err(e) = fs::create_dir_all(directory) {
+            return Err(format!("Failed to create directory: {:?}", e));
+        }
 
-    pub fn save_package_to_file(&self, package_name: &str, payload: &PackageRequest) -> Result<(), String> {
-        let file_path = self.package_dir.join(format!("{}.json", package_name));
-
-        let json_data = serde_json::to_string_pretty(payload)
-            .map_err(|err| format!("Failed to serialize package: {}", err))?;
+        let file_path = directory.join(filename);
 
         let mut file = File::create(&file_path)
             .map_err(|err| format!("Failed to create file: {}", err))?;
-        file.write_all(json_data.as_bytes())
+        file.write_all(raw_json.as_bytes())
             .map_err(|err| format!("Failed to write to file: {}", err))?;
-
-        let mut hasher = Sha512::new();
-        hasher.update(&json_data);
-        let checksum = hasher.finalize();
-
-        println!("Checksum for package '{}': {:x}", package_name, checksum);
+        
+        println!("Saved file: {:?}", file_path);
 
         Ok(())
     }
 
-    pub fn load_package_from_file(&self, package_name: &str) -> Result<PackageResponse, String> {
-        let file_path = self.package_file_path(package_name);
+    pub fn load_from_file(&self, directory: &PathBuf, filename: &str) -> Result<Value, String> {
+        let file_path = directory.join(filename);
 
         let file = File::open(&file_path)
             .map_err(|err| format!("Failed to open file: {}", err))?;
 
-        let package: PackageResponse = from_reader(file)
-            .map_err(|err| format!("Failed to deserialize package: {}", err))?;
+        let data: Value = from_reader(file)
+            .map_err(|err| format!("Failed to deserialize JSON: {}", err))?;
 
-        Ok(package)
-    }
-
-    fn package_file_path(&self, package_name: &str) -> PathBuf {
-        self.package_dir.join(format!("{}.json", package_name))
+        Ok(data)
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let package_dir = PathBuf::from("packages");
-    let state = Arc::new(AppState::new(package_dir));
+    let state = Arc::new(AppState::new());
 
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
