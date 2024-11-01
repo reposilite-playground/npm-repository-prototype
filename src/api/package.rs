@@ -1,16 +1,26 @@
-use std::fmt::format;
+
+use std::fs::{create_dir_all, write, File};
+use std::io::Read;
 use std::path::PathBuf;
 use crate::AppState;
 use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
-use serde_json::{to_string, to_string_pretty, Value};
+use serde_json::{to_string, to_string_pretty, to_vec, Value};
 use std::sync::Arc;
+use axum::body::Bytes;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::routing::get;
+use axum_macros::debug_handler;
+use base64::{decode, encode, Engine};
+use base64::alphabet::STANDARD;
+use base64::engine::general_purpose;
+use sha2::{Digest, Sha512};
 
 pub async fn put_package(
     Path(package_name): Path<String>,
     State(state): State<Arc<AppState>>,
     Json(mut payload): Json<Value>,
 ) -> impl IntoResponse {
+    println!("payload: {:?}", payload);
     let attachments = match payload.get_mut("_attachments") {
         Some(attachments_value) => {
             attachments_value.as_object_mut().ok_or("Expected _attachments to be an object").unwrap()
@@ -35,7 +45,7 @@ pub async fn put_package(
         };
 
         // extract tarball compressed data
-        let compressed_data = match tarball_data.as_str() {
+        let encoded_compressed_data = match tarball_data.as_str() {
             Some(data) => data,
             None => {
                 eprintln!("Tarball data is not a string");
@@ -43,35 +53,76 @@ pub async fn put_package(
             }
         };
         
-        // save tarball
-        state.save_to_file(&PathBuf::from(format!("packages/{}", package_name)), &tarball_file_name, compressed_data).unwrap();
-        if let Err(e) = std::fs::write(tarball_file_name, compressed_data) {
-            eprintln!("Failed to write tarball file '{}': {}", tarball_file_name, e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write tarball file: {}", e)).into_response();
-        }
+        // decode tarball data with base64
+        let compressed_data = match general_purpose::STANDARD.decode(encoded_compressed_data) {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("Failed to decode tarball data: {}", e);
+                return (StatusCode::BAD_REQUEST, "Failed to decode tarball data").into_response();
+            }
+        };
+        
+        // save compressed data
+        state.save_to_file(&PathBuf::from(format!("packages/{}", package_name)), &tarball_file_name, &*compressed_data).unwrap();
     }
-    
+
     // remove _attachments field
     payload.as_object_mut().unwrap().remove("_attachments");
-    
+
     // save metadata
-    state.save_to_file(&PathBuf::from(format!("packages/{}", package_name)), "metadata.json", &to_string(&payload).unwrap()).unwrap();
+    state.save_json_to_file(&PathBuf::from(format!("packages/{}", package_name)), "metadata.json", &to_string(&payload).unwrap()).unwrap();
 
     "Package stored successfully".into_response()
+}
+
+fn append_existing_versions() {
+    
 }
 
 pub async fn get_package(
     Path(package_name): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    match state.load_from_file(&PathBuf::from(format!("packages/{}", package_name)), "metadata.json") {
+    println!("Received request for package metadata: {}", package_name);
+    match state.load_json_from_file(&PathBuf::from(format!("packages/{}", package_name)), "metadata.json") {
         Ok(metadata) => {
+            println!("Returning package metadata: {:?}", metadata);
             Json(metadata).into_response()
         },
         Err(e) => {
             eprintln!("Failed to load package metadata: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to load package metadata: {}", e)).into_response() // This also returns Response<Body>
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to load package metadata: {}", e)).into_response()
         }
     }
 }
 
+#[debug_handler]
+pub async fn get_package_tarball(
+    Path((package_name, tarball_name)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    println!("Received request for package tarball: {} - {}", package_name, tarball_name);
+
+    let file_path = PathBuf::from(format!("packages/{}/{}", package_name, tarball_name));
+
+    let mut file = match File::open(&file_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Failed to open tarball file: {}", e);
+            return Err((StatusCode::NOT_FOUND, "Tarball not found".into()));
+        },
+    };
+
+    let mut tarball_data = Vec::new();
+    if let Err(e) = file.read_to_end(&mut tarball_data) {
+        eprintln!("Failed to read tarball file: {}", e);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "Failed to read tarball file".into()));
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", HeaderValue::from_static("application/octet-stream"));
+
+    let body = axum::body::Bytes::from(tarball_data);
+
+    Ok((headers, body).into_response())
+}
