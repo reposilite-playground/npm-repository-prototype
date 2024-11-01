@@ -1,26 +1,28 @@
-
-use std::fs::{create_dir_all, write, File};
+use crate::AppState;
+use axum::body::Body;
+use axum::http::{HeaderMap, HeaderValue, Request};
+use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
+use axum_macros::debug_handler;
+use base64::engine::general_purpose;
+use base64::Engine;
+use serde_json::{to_string, Value};
+use sha2::Digest;
+use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use crate::AppState;
-use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
-use serde_json::{to_string, to_string_pretty, to_vec, Value};
 use std::sync::Arc;
-use axum::body::Bytes;
-use axum::http::{HeaderMap, HeaderValue};
-use axum::routing::get;
-use axum_macros::debug_handler;
-use base64::{decode, encode, Engine};
-use base64::alphabet::STANDARD;
-use base64::engine::general_purpose;
-use sha2::{Digest, Sha512};
 
 pub async fn put_package(
     Path(package_name): Path<String>,
     State(state): State<Arc<AppState>>,
     Json(mut payload): Json<Value>,
 ) -> impl IntoResponse {
+    println!("Received request to store package: {}", package_name);
     println!("payload: {:?}", payload);
+
+    let package_path = format!("packages/{}", package_name);
+
+    // check for '_attachments' in the payload
     let attachments = match payload.get_mut("_attachments") {
         Some(attachments_value) => {
             attachments_value.as_object_mut().ok_or("Expected _attachments to be an object").unwrap()
@@ -33,7 +35,11 @@ pub async fn put_package(
 
     // iterate over all tarballs attached
     for (name, value) in attachments {
-        let tarball_file_name = name.as_str();
+        let mut tarball_file_name = name.as_str();
+        if tarball_file_name.starts_with("@") {
+            println!("Tarball file name starts with '@', removing it (name: {})", tarball_file_name);
+            tarball_file_name = tarball_file_name.split("/").last().unwrap();
+        }
 
         // extract tarball object
         let tarball_data = match value.get("data") {
@@ -61,19 +67,21 @@ pub async fn put_package(
                 return (StatusCode::BAD_REQUEST, "Failed to decode tarball data").into_response();
             }
         };
-        
+
         // save compressed data
-        state.save_to_file(&PathBuf::from(format!("packages/{}", package_name)), &tarball_file_name, &*compressed_data).unwrap();
+        state.save_to_file(&PathBuf::from(&package_path), tarball_file_name, &compressed_data).unwrap();
     }
 
     // remove _attachments field
     payload.as_object_mut().unwrap().remove("_attachments");
-    
+
     // append existing versions
-    append_existing_versions(state.clone(), &package_name, &mut payload);
+    if state.load_json_from_file(&PathBuf::from(&package_path), "metadata.json").is_ok() {
+        append_existing_versions(state.clone(), &package_name, &mut payload);
+    }
 
     // save metadata
-    state.save_json_to_file(&PathBuf::from(format!("packages/{}", package_name)), "metadata.json", &to_string(&payload).unwrap()).unwrap();
+    state.save_json_to_file(&PathBuf::from(&package_path), "metadata.json", &to_string(&payload).unwrap()).unwrap();
 
     "Package stored successfully".into_response()
 }
@@ -99,10 +107,14 @@ fn append_existing_versions(state: Arc<AppState>, package_name: &str, metadata: 
     metadata.as_object_mut().unwrap().insert("versions".to_string(), Value::from(versions.clone()));
 }
 
+#[debug_handler]
 pub async fn get_package(
     Path(package_name): Path<String>,
     State(state): State<Arc<AppState>>,
+    req: Request<Body>
 ) -> impl IntoResponse {
+    // print headers
+    println!("Headers: {:?}", req.headers());
     println!("Received request for package metadata: {}", package_name);
     match state.load_json_from_file(&PathBuf::from(format!("packages/{}", package_name)), "metadata.json") {
         Ok(metadata) => {
@@ -121,9 +133,15 @@ pub async fn get_package_tarball(
     Path((package_name, tarball_name)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    println!("Received request for package tarball: {} - {}", package_name, tarball_name);
+    let mut tarball_file_name = tarball_name.as_str();
+    if tarball_file_name.starts_with("@") {
+        println!("Tarball file name starts with '@', removing it (name: {})", tarball_file_name);
+        tarball_file_name = tarball_file_name.split("/").last().unwrap();
+    }
+    
+    println!("Received request for package tarball: {} - {}", package_name, tarball_file_name);
 
-    let file_path = PathBuf::from(format!("packages/{}/{}", package_name, tarball_name));
+    let file_path = PathBuf::from(format!("packages/{}/{}", package_name, tarball_file_name));
 
     let mut file = match File::open(&file_path) {
         Ok(f) => f,

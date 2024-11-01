@@ -3,14 +3,13 @@ mod api;
 use crate::api::package::{get_package, get_package_tarball, put_package};
 use crate::api::user::add_user;
 use axum::routing::{get, put};
-use axum::{Json, Router};
 use serde_json::{from_reader, Value};
-use sha2::{Digest, Sha512};
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use axum::Router;
 
 #[derive(Debug, Clone, Default)]
 pub struct AppState {
@@ -22,17 +21,19 @@ impl AppState {
     }
 
     pub fn save_to_file(&self, directory: &PathBuf, filename: &str, data: &[u8]) -> Result<(), String> {
+        println!("Attempting to save file in directory: {:?}", directory);
         if let Err(e) = fs::create_dir_all(directory) {
             return Err(format!("Failed to create directory: {:?}", e));
         }
 
         let file_path = directory.join(filename);
+        println!("Full file path resolved to: {:?}", file_path);
 
         let mut file = File::create(&file_path)
             .map_err(|err| format!("Failed to create file: {}", err))?;
         file.write_all(data)
             .map_err(|err| format!("Failed to write to file: {}", err))?;
-        
+
         println!("Saved file: {:?}", file_path);
 
         Ok(())
