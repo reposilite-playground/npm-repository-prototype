@@ -68,6 +68,9 @@ pub async fn put_package(
 
     // remove _attachments field
     payload.as_object_mut().unwrap().remove("_attachments");
+    
+    // append existing versions
+    append_existing_versions(state.clone(), &package_name, &mut payload);
 
     // save metadata
     state.save_json_to_file(&PathBuf::from(format!("packages/{}", package_name)), "metadata.json", &to_string(&payload).unwrap()).unwrap();
@@ -75,8 +78,25 @@ pub async fn put_package(
     "Package stored successfully".into_response()
 }
 
-fn append_existing_versions() {
+fn append_existing_versions(state: Arc<AppState>, package_name: &str, metadata: &mut Value) -> () {
+    let mut existing_metadata = state
+        .load_json_from_file(&PathBuf::from(format!("packages/{}", package_name)), "metadata.json")
+        .unwrap();
     
+    // load versions to map from existing metadata (file)
+    let versions = existing_metadata
+        .get_mut("versions")
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    
+    // put or replace new version to map
+    for (version, version_data) in metadata.get_mut("versions").unwrap().as_object_mut().unwrap() {
+        versions.insert(version.clone(), version_data.clone());
+    }
+    
+    // replace versions map in new metadata
+    metadata.as_object_mut().unwrap().insert("versions".to_string(), Value::from(versions.clone()));
 }
 
 pub async fn get_package(
